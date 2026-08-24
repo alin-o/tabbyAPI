@@ -1,7 +1,11 @@
 # Use an official CUDA runtime with Ubuntu as a parent image
 FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
 
-# Install system dependencies
+# Install system dependencies.
+# The cuda-*-dev-12-8 packages provide the CUDA headers, libcuda stub,
+# and ptxas that Triton needs at runtime to JIT-compile kernels.
+# The runtime-only base image lacks these, which breaks models with
+# Gated DeltaNet layers (triton causal_conv1d JIT) at load time.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
@@ -9,6 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.12 \
     python3-pip \
     python3.12-venv \
+    python3.12-dev \
+    cuda-cudart-dev-12-8 \
+    cuda-nvcc-12-8 \
+    cuda-driver-dev-12-8 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a virtual environment

@@ -1,0 +1,29 @@
+# LiteLLM gateway in front of tabbyAPI (Qwen3.8-27B-exl3 on exllamav3).
+#
+# tabbyAPI only exposes /v1/chat/completions. The `use_chat_completions_api:
+# true` flag makes LiteLLM bridge its /v1/responses endpoint onto the
+# upstream chat-completions API, so clients that hardcode the Responses API
+# (e.g. OpenAI-compatible agents, Codex-style clients) keep working.
+#
+# A PostgreSQL database is attached for UI settings and response history:
+#   - create (streaming + non-streaming) works
+#   - GET / previous_response_id / delete now work (persisted)
+model_list:
+  - model_name: Qwen3.8-27B-exl3
+    litellm_params:
+      model: openai/Qwen3.8-27B-exl3
+      api_base: http://tabbyapi:5000/v1
+      api_key: sk-local-not-checked
+      use_chat_completions_api: true
+  # lowercase alias for convenience
+  - model_name: qwen3.8
+    litellm_params:
+      model: openai/Qwen3.8-27B-exl3
+      api_base: http://tabbyapi:5000/v1
+      api_key: sk-local-not-checked
+      use_chat_completions_api: true
+
+litellm_settings:
+  # forward upstream errors as-is; drop params tabbyAPI doesn't know
+  drop_params: true
+  database: postgresql://litellm:litellm@litellm-db:5432/litellm
