@@ -11,6 +11,8 @@
 #   ./run.sh start [M]   # verify + start model M (default qwen3.8)
 #   ./run.sh status      # list compose projects + running containers
 #   ./run.sh logs [M]    # follow docker compose logs (both tabbyapi + litellm)
+#   ./run.sh stats [S]   # live GPU monitor for the running tabbyapi container
+#                        # (S = refresh seconds, default 1)
 #
 # The 4090 fits ONE model at a time, so this script is the only launcher:
 # it verifies the model's configs + weights, stops whatever other tabbyAPI
@@ -32,7 +34,7 @@ cd "$(dirname "$0")"
 # Project name (compose slug) of the live tabbyapi stack, read off the
 # container label the same way the `stop` verb does. Prints nothing when no
 # stack is running; the `logs` verb treats that as "nothing to follow".
-logs_detect_project() {
+detect_project() {
     local cid
     cid="$(docker ps -q --filter label=com.docker.compose.service=tabbyapi 2>/dev/null | head -n1 || true)"
     [ -n "$cid" ] || return 0
@@ -52,6 +54,80 @@ case "${1:-}" in
         done < <(docker ps -q --filter label=docker.docker.compose.project >/dev/null 2>&1 && docker ps -q --filter label=com.docker.compose.service=tabbyapi 2>/dev/null)
         echo "done."
         exit 0
+        ;;
+    stats)
+        interval="${2:-1}"
+        if [[ ! $interval =~ ^([1-9][0-9]*([.][0-9]+)?|0[.][0-9]*[1-9][0-9]*)$ ]]; then
+            echo "Usage: $0 stats [refresh-seconds]" >&2
+            exit 2
+        fi
+        for command in docker nvidia-smi; do
+            if ! command -v "$command" >/dev/null 2>&1; then
+                echo "Required command not found: $command" >&2
+                exit 1
+            fi
+        done
+        # The right container is the tabbyapi service of the live stack.
+        # Re-looked-up every frame so the monitor follows restarts and
+        # model switches without being restarted.
+        printf '\033[?25l'
+        trap 'printf "\033[?25h\n"' EXIT
+        trap 'exit 0' INT TERM
+        while true; do
+            GPU_CID="$(docker ps -q --filter label=com.docker.compose.service=tabbyapi 2>/dev/null | head -n1 || true)"
+            printf '\033[H'
+            printf 'TabbyAPI GPU monitor - %s - refresh: %ss\n\n' \
+                "$(date '+%F %T')" "$interval"
+            if [[ -z $GPU_CID ]]; then
+                echo 'No tabbyapi container running. Start one first: ./run.sh start'
+                printf '\033[J'
+                sleep "$interval"
+                continue
+            fi
+            GPU_NAME="$(docker inspect --format '{{.Name}}' "$GPU_CID" 2>/dev/null | sed 's|^/||' || true)"
+            GPU_STATE="$(docker inspect --format '{{.State.Status}}' "$GPU_CID" 2>/dev/null || true)"
+            printf 'Container: %s  State: %s\n\n' "${GPU_NAME:-unknown}" "${GPU_STATE:-unknown}"
+            gpu_rows=$(nvidia-smi --query-gpu=uuid,index,name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw,power.limit --format=csv,noheader,nounits 2>/dev/null || true)
+            if [[ -z $gpu_rows ]]; then
+                echo 'nvidia-smi could not read GPU metrics.'
+                exit 1
+            fi
+            # container_pids is just to note when the GPU lists no process
+            # for the container (common across PID namespaces), not for
+            # matching.
+            container_pids=$(docker top "$GPU_CID" -eo pid= 2>/dev/null | awk '$1 ~ /^[0-9]+$/ { print $1 }' | tr '\n' ' ' || true)
+            app_rows=$(docker exec "$GPU_CID" nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits 2>/dev/null || true)
+            matching_apps=$(awk -F ', *' -v pids="$container_pids" '
+                BEGIN {
+                    count = split(pids, values, " ")
+                    for (i = 1; i <= count; i++) {
+                        if (values[i] != "") wanted[values[i]] = 1
+                    }
+                }
+                $2 in wanted { print }
+            ' <<< "$app_rows")
+            relevant_uuids=$(docker exec "$GPU_CID" nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | awk '{$1=$1; print}' || true)
+            printf '%-3s %-24s %7s %7s %18s %7s %17s\n' GPU NAME UTIL MEM-UTIL VRAM TEMP POWER
+            awk -F ', *' -v uuids="$relevant_uuids" '
+                BEGIN {
+                    count = split(uuids, values, /[[:space:]]+/)
+                    for (i = 1; i <= count; i++) wanted[values[i]] = 1
+                }
+                $1 in wanted {
+                    printf "%-3s %-24.24s %6s%% %6s%% %7s / %-7s MiB %5s C %7s / %-7s W\n", $2, $3, $4, $5, $6, $7, $8, $9, $10
+                }
+            ' <<< "$gpu_rows"
+            if [[ -n $matching_apps ]]; then
+                printf '\nContainer GPU processes:\n'
+                printf '%-8s %-24s %12s\n' PID PROCESS VRAM
+                awk -F ', *' '{ printf "%-8s %-24.24s %9s MiB\n", $2, $3, $4 }' <<< "$matching_apps"
+            else
+                printf '\nPer-process GPU accounting is unavailable. GPU totals above remain valid.\n'
+                echo 'This is expected when Docker and nvidia-smi use different PID namespaces.'
+            fi
+            printf '\033[J'
+            sleep "$interval"
+        done
         ;;
     logs)
         case "${2:-}" in
@@ -76,7 +152,7 @@ PY
             *)
                 # no model arg: read the project name straight off the live
                 # container label (same detection as the `stop` verb).
-                PROJ="$(logs_detect_project)"
+                PROJ="$(detect_project)"
                 if [ -z "$PROJ" ]; then
                     echo "logs: no model given and no tabbyapi stack running" >&2
                     exit 1
@@ -95,9 +171,6 @@ PY
         exit 0
         ;;
     status)
-        echo "=== compose projects ==="
-        docker compose ls 2>/dev/null || true
-        echo
         echo "=== tabbyapi containers ==="
         # ps support is yes/no and actively being worked on (#17594/#17653 #15379); as a fallback try a small pipeline.
         docker ps 2>/dev/null | grep -i tabby && echo "(ps: ok)"
