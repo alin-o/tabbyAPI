@@ -46,8 +46,8 @@ RUN pip install --no-cache-dir .[cu12]
 # See: https://github.com/theroyallab/tabbyAPI/issues/414
 ARG EXTRAS=
 RUN if [ -n "$EXTRAS" ]; then \
-      pip freeze | grep -E '^torch(==| @)' > /tmp/torch-constraint.txt && \
-      pip install --no-cache-dir -c /tmp/torch-constraint.txt .[extras]; \
+    pip freeze | grep -E '^torch(==| @)' > /tmp/torch-constraint.txt && \
+    pip install --no-cache-dir -c /tmp/torch-constraint.txt .[extras]; \
     fi
 
 RUN rm pyproject.toml
