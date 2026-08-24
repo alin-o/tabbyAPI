@@ -19,7 +19,7 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 compose_file="$script_dir/docker-compose.local.yml"
 service=tabbyapi
 # host port published by the vLLM qwen38 container (vllm_qwen3.8.sh / docker-compose.yml)
-host_port=${VLLM_HOST_PORT:-12434}
+host_port=${VLLM_HOST_PORT:-8881}
 
 find_container() {
     # prefer the compose-managed container, then fall back to the published

@@ -16,6 +16,12 @@ model_list:
       api_key: sk-local-not-checked
       use_chat_completions_api: true
   # lowercase alias for convenience
+  - model_name: qwen3.8
+    litellm_params:
+      model: openai/Qwen3.8-27B-exl3
+      api_base: http://tabbyapi:5000/v1
+      api_key: sk-local-not-checked
+      use_chat_completions_api: true
   - model_name: default
     litellm_params:
       model: openai/Qwen3.8-27B-exl3

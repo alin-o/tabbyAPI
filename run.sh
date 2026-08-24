@@ -10,6 +10,7 @@
 #   ./run.sh stop        # `docker compose down` the whole tabbyAPI + litellm stack
 #   ./run.sh start [M]   # verify + start model M (default qwen3.8)
 #   ./run.sh status      # list compose projects + running containers
+#   ./run.sh logs [M]    # follow docker compose logs (both tabbyapi + litellm)
 #
 # The 4090 fits ONE model at a time, so this script is the only launcher:
 # it verifies the model's configs + weights, stops whatever other tabbyAPI
@@ -28,6 +29,16 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Project name (compose slug) of the live tabbyapi stack, read off the
+# container label the same way the `stop` verb does. Prints nothing when no
+# stack is running; the `logs` verb treats that as "nothing to follow".
+logs_detect_project() {
+    local cid
+    cid="$(docker ps -q --filter label=com.docker.compose.service=tabbyapi 2>/dev/null | head -n1 || true)"
+    [ -n "$cid" ] || return 0
+    docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$cid" 2>/dev/null || true
+}
+
 MODEL="${1:-qwen3.8}"
 # --- control verbs (dispatch at the end reassigns MODEL) -------------------
 case "${1:-}" in
@@ -40,6 +51,47 @@ case "${1:-}" in
             docker compose -p "$proj" -f docker/docker-compose.local.yml down --timeout 30 >/dev/null 2>&1 || true
         done < <(docker ps -q --filter label=docker.docker.compose.project >/dev/null 2>&1 && docker ps -q --filter label=com.docker.compose.service=tabbyapi 2>/dev/null)
         echo "done."
+        exit 0
+        ;;
+    logs)
+        case "${2:-}" in
+            [a-zA-Z]*)
+                MODEL="$2"
+                CFG="docker/config.${MODEL}.yml"
+                if [ ! -f "$CFG" ]; then
+                    echo "error: MODEL='$MODEL' has no docker/config.${MODEL}.yml (known:)" >&2
+                    for c in docker/config.*.yml; do [ -f "$c" ] && echo "  $(basename "$c" .yml)" >&2; done
+                    exit 1
+                fi
+                SLUG="$(python3 - "$CFG" <<'PY'
+import re, sys
+txt = open(sys.argv[1]).read()
+m = re.search(r"^\s*model_slug:\s*\"?([\w.-]+)\"?\s*$", txt, re.M)
+print(m.group(1) if m else "")
+PY
+)"
+                PROJ="${SLUG:-${MODEL//./}}"
+                ;;
+            --*) shift;;
+            *)
+                # no model arg: read the project name straight off the live
+                # container label (same detection as the `stop` verb).
+                PROJ="$(logs_detect_project)"
+                if [ -z "$PROJ" ]; then
+                    echo "logs: no model given and no tabbyapi stack running" >&2
+                    exit 1
+                fi
+                echo "logs: no model given, detected running project '$PROJ'"
+                ;;
+        esac
+        # compose logs finds the project's containers by their compose label,
+        # so -p <project> is all that's needed; no MODEL/MODEL_SLUG env.
+        echo "following logs for project $PROJ; Ctrl-C to stop"
+        echo
+        docker compose -p "$PROJ" -f docker/docker-compose.local.yml \
+            logs --tail 200 -f "${@:3}"
+        # THIS BRANCH MUST EXIT: anything below falls through into the
+        # 'start' orchestration (validate -> stop others -> up -d).
         exit 0
         ;;
     status)
@@ -131,11 +183,38 @@ fi
 MODEL="$MODEL" MODEL_SLUG="$SLUG" \
     docker compose -f docker/docker-compose.local.yml up -d --force-recreate
 
+# --- wait until port 8881 actually answers -----------------------------------
+# We poll the litellm HTTP port directly (not the compose healthcheck),
+# because litellm's /health/liveliness also waits on tabbyapi finishing its
+# model load, so the healthcheck flips to 'healthy' only AFTER the port has
+# served requests for a while. This checks whether the endpoint is usable.
+echo
+echo "none" >/dev/null
+WAITUP_PID=""
+python3 - "$SLUG" <<'PY' &
+import sys, time, urllib.request
+slug = sys.argv[1]
+url = "http://127.0.0.1:8881/v1/models"
+deadline = time.time() + 60 * 20
+while time.time() < deadline:
+    try:
+        with urllib.request.urlopen(url, timeout=2) as r:
+            if r.status == 200:
+                sys.exit(0)
+    except Exception:
+        pass
+    time.sleep(2)
+sys.exit(1)
+PY
+WAITUP_PID=$!
+echo "waiting for litellm to answer on http://localhost:8881 (this can exceed a minute while tabbyapi loads the EXL3 checkpoint)"
+wait "$WAITUP_PID" && { echo "litellm is serving on :8881." ; } || { echo "error: litellm never answered on :8881; recent logs:" >&2; docker compose -p "$SLUG" -f docker/docker-compose.local.yml logs --tail 30 litellm >&2 || true; exit 1; }
+
 echo
 echo "============================================================"
 echo " model       : $MODEL"
 echo " weights     : $CKPT"
 echo " endpoint    : http://localhost:8881/v1  (chat completions + /v1/responses)"
 echo " litellm UI  : http://localhost:8881/ui"
-echo " logs        : MODEL=$MODEL MODEL_SLUG=$SLUG docker compose -f docker/docker-compose.local.yml logs -f"
+echo " logs        : ./run.sh logs"
 echo "============================================================"
