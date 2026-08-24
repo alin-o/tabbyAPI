@@ -1,0 +1,29 @@
+# LiteLLM gateway in front of tabbyAPI (Ornith-1.5-35B-A3B-EXL3-4bpw on exllamav3).
+#
+# tabbyAPI only exposes /v1/chat/completions. The `use_chat_completions_api:
+# true` flag makes LiteLLM bridge its /v1/responses endpoint onto the
+# upstream chat-completions API, so clients that hardcode the Responses API
+# (e.g. OpenAI-compatible agents, Codex-style clients) keep working.
+#
+# A PostgreSQL database is attached for UI settings and response history
+# (same pattern as litellm-config.yaml; separate volume via this compose file's
+# own namespace).
+model_list:
+  - model_name: Ornith-1.5-35B-A3B-EXL3-4bpw
+    litellm_params:
+      model: openai/Ornith-1.5-35B-A3B-EXL3-4bpw
+      api_base: http://tabbyapi:5000/v1
+      api_key: sk-local-not-checked
+      use_chat_completions_api: true
+  # lowercase alias for convenience
+  - model_name: default
+    litellm_params:
+      model: openai/Ornith-1.5-35B-A3B-EXL3-4bpw
+      api_base: http://tabbyapi:5000/v1
+      api_key: sk-local-not-checked
+      use_chat_completions_api: true
+
+litellm_settings:
+  # forward upstream errors as-is; drop params tabbyAPI doesn't know
+  drop_params: true
+  database: postgresql://litellm:litellm@litellm-db:5432/litellm

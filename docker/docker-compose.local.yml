@@ -1,15 +1,32 @@
-# Local build of the alin-o/tabbyAPI fork, serving the Qwen3.8-27B EXL3
-# checkpoint. Single RTX 4090 (24GB).
+# Local build of the alin-o/tabbyAPI fork, serving whichever model
+# ../run.sh started. Single RTX 4090 (24 GB) - only ONE model at a time,
+# so this ONE file covers all models; run.sh picks everything up from the
+# MODEL argument.
+#
+# MODEL selects (all named after <model>):
+#   ./config.<model>.yml             -> tabbyAPI (KV cache, vision, MTP, tools)
+#   ./litellm-config.<model>.yaml    -> litellm (model names + aliases to expose)
+#   ../models/<dir name>             -> weights (see ../models/download-<model>.sh)
+#
+# MODEL_SLUG (default: qwen38) is the compose project name - it must be a
+# valid docker compose project name (no dots). Each model gets its own
+# project, its own litellm-db volume (separate UI history), and they share
+# one tabbyapi image (no rebuild when switching models).
+#
+# run.sh: verifies configs + weights, stops any other live tabbyapi stack
+# first (dumping its litellm DB to ../docker/ first, KEEP_OLD=1 refuses),
+# then starts this one on port 8881.
 #
 # Layout:
-#   litellm  -> host port 8881 (only public service; adds /v1/responses)
-#   tabbyapi -> internal only on 5000 (backend, chat completions)
+#   litellm    -> host port 8881 (only public service; adds /v1/responses)
+#   tabbyapi   -> internal only on 5000 (backend, chat completions)
+#   litellm-db -> postgres, per-model project volume (UI/history persistence)
 #
-# Usage:
-#   docker compose -f docker/docker-compose.local.yml up -d --build
-#
-# Model is pre-downloaded into ./models/Qwen3.8-27B-exl3 (via `hf download`).
-# LiteLLM reads ./litellm-config.yaml (with PostgreSQL for UI/history).
+# Direct use (normally via ../run.sh):
+#   MODEL=ornith MODEL_SLUG=ornith \
+#     docker compose -f docker/docker-compose.local.yml up -d --force-recreate
+
+name: ${MODEL_SLUG:-qwen38}
 
 services:
   litellm-db:
@@ -30,12 +47,15 @@ services:
     build:
       context: ..
       # cu13 variant: torch 2.11.0+cu130 + exllamav3 1.4.2 wheels.
-      # Driver 595.84 supports CUDA 13.2; the Dockerfile includes the
-      # cuda-*-dev-13-2 packages Triton needs to JIT-compile kernels.
+      # Driver supports CUDA 13.x; the Dockerfile includes the
+      # cuda-*-dev packages Triton needs to JIT-compile kernels.
       dockerfile: ./docker/Dockerfile.cu13
-    image: tabbyapi-local-qwen38
+    # One shared image for all models (same torch/exllamav3): switching
+    # models never rebuilds, it only recreates the container with new
+    # config mounts.
+    image: tabbyapi-local-4090
     gpus: all
-    # No host port: litellm is the only public service (8881).
+    # No host port: litellm on 8881 is the only public service.
     # tabbyapi is reachable on the compose network at http://tabbyapi:5000.
     shm_size: "8g"
     ulimits:
@@ -48,10 +68,9 @@ services:
       retries: 3
     environment:
       - NAME=TabbyAPI
-      - NVIDIA_VISIBLE_DEVICES=all
     volumes:
       - ../models:/app/models
-      - ./config.qwen3.8.yml:/app/config.yml:ro
+      - ./config.${MODEL}.yml:/app/config.yml:ro
 
   litellm:
     # Public gateway on 8881. Bridges /v1/responses to tabbyAPI's
@@ -70,7 +89,7 @@ services:
       litellm-db:
         condition: service_healthy
     volumes:
-      - ./litellm-config.yaml:/app/config/litellm-config.yaml:ro
+      - ./litellm-config.${MODEL}.yaml:/app/config/litellm-config.yaml:ro
     environment:
       - NAME=LiteLLM
       - DATABASE_URL=postgresql://litellm:litellm@litellm-db:5432/litellm

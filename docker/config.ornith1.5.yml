@@ -1,0 +1,46 @@
+# TabbyAPI config for Ornith-1.5-35B-A3B EXL3
+# (ultimatechris/Ornith-1.5-35B-A3B-EXL3-4bpw, 4.0 bpw HQ). Single RTX 4090 (24GB), sm_89
+#
+# Author notes from the model card:
+# - 4090-benchmarked, decode ~105-115 tok/s out to 128k context
+# - 6-bit KV cache wins at long context (~12% faster at 128k vs fp16)
+# - MTP and n-gram speculative decoding both came out slower -> no draft_model here
+# - exllamav3 1.4.2 / torch >= 2.10 required (torch 2.8 crashed on load)
+
+# run.sh uses this to pick the compose project/slug and checkpoint match.
+model_slug: ornith
+
+network:
+  host: 0.0.0.0
+  port: 5000
+  # Localhost-only exposure via docker port mapping; no API keys required.
+  disable_auth: true
+  api_servers: ["OAI"]
+  sse_ping_interval: 15
+
+model:
+  model_dir: models
+  model_name: Ornith-1.5-35B-A3B-EXL3-4bpw
+  backend: exllamav3
+
+  # Q6 per author's note. Below the Qwen3.8 stack's 128000: the 18.5 GiB
+  # artifact + vision tower leaves less VRAM headroom on the 24GB.
+  # Bump toward 128000 (multiple of 256) if it fits (author ran 128k on 4090).
+  cache_size: 163840
+  cache_mode: Q6
+
+  # EXL3 output chunking stays enabled.
+  output_chunking: true
+
+  # Vision tower (333 tensors) is included in this checkpoint.
+  vision: true
+
+  # Qwen3.5 family: chat template uses enable_thinking
+  # (reasoning_effort defaults to xhigh when thinking is enabled).
+  reasoning: true
+
+  # Qwen3.5 tool call parsing (same parser family as the Qwen3.8 stack).
+  tool_format: qwen3_5
+
+logging:
+  log_prompt: false

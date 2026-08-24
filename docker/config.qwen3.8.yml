@@ -1,6 +1,9 @@
 # TabbyAPI config for Qwen3.8-27B EXL3 (turboderp/Qwen3.8-27B-exl3, SC_4.00bpw_H5)
 # Single RTX 4090 (24GB), sm_89
 
+# run.sh uses this to pick the compose project/slug and checkpoint match.
+model_slug: qwen38
+
 network:
   host: 0.0.0.0
   port: 5000
